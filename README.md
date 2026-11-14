@@ -4,4 +4,4 @@ A backwards-singing game. Record a jingle, hear it reversed, sing the reversed v
 
 Single static `index.html`, no build step. All audio stays in the browser.
 
-Deployed on Vercel; every push to `main` deploys automatically.
+Live at https://reverso-sigma.vercel.app. Deployed on Vercel; every push to `main` deploys automatically.
