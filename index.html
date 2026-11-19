@@ -66,6 +66,12 @@ button:disabled{opacity:.4;cursor:not-allowed}
 .meter i{display:block;height:100%;width:0;background:var(--accent);transition:width .6s}
 .msg{font-size:14px;color:var(--rec);margin:0}
 footer{color:var(--muted);font-size:13px;text-align:center}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{min-height:40px;padding:8px 14px;font-size:14px}
+.chip[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.slider{display:flex;align-items:center;gap:12px;font-size:14px;color:var(--muted)}
+.slider input{flex:1;min-width:0;accent-color:var(--accent);height:28px}
+.slider output{font-family:var(--mono);font-size:13px;min-width:5ch;text-align:right;font-variant-numeric:tabular-nums;color:var(--ink)}
 </style>
 </head>
 <body>
@@ -86,6 +92,20 @@ footer{color:var(--muted);font-size:13px;text-align:center}
       <button id="p1" disabled>Play original</button>
     </div>
     <p class="msg" id="m1" hidden></p>
+  </section>
+
+  <section class="deck" id="dfx" aria-labelledby="hfx" aria-disabled="true">
+    <div class="deck-head"><span class="step">Bonus</span><h2 id="hfx">Voice twister</h2></div>
+    <p class="hint">Give your recording a new voice. Pick a style, fine-tune the pitch, then play or save it. It all runs on your device.</p>
+    <div class="chips" id="fxchips" role="group" aria-label="Voice style"></div>
+    <label class="slider" for="semi">Pitch <input type="range" id="semi" min="-12" max="12" step="1" value="0" disabled><output id="semiv">0</output></label>
+    <canvas id="cfx" aria-label="Twisted waveform"></canvas>
+    <div class="row">
+      <button class="primary" id="pfx" disabled>Play twisted</button>
+      <button id="pfxr" disabled>Play it backwards</button>
+      <button id="sfx" disabled>Save as WAV</button>
+    </div>
+    <p class="hint" id="fxmsg">Record something in step 1 first.</p>
   </section>
 
   <section class="deck" id="d2" aria-labelledby="h2" aria-disabled="true">
@@ -215,6 +235,7 @@ function setOriginal(buf){
   $("t1").textContent=buf.duration.toFixed(1)+" s";
   draw($("c1"),orig,css("--wave"));draw($("c2"),rev,css("--wave"));draw($("c3"),null);
   ["p1","p2","r3","f3"].forEach(i=>$(i).disabled=false);enable("d2",1);enable("d3",1);resetScore();
+  enable("dfx",1);$("semi").disabled=false;updateFx(false);
 }
 function setAttempt(buf){
   back=reverse(buf);$("t3").textContent=buf.duration.toFixed(1)+" s";
@@ -225,6 +246,115 @@ function setAttempt(buf){
 }
 function resetScore(){$("score").textContent="--";$("score").style.color="";$("verdict").textContent="Finish step 3 to see how close you got.";$("bar").style.width="0";$("both").disabled=$("again").disabled=true;enable("d4",0)}
 
+// ---- Voice twister: classic effects with the Web Audio API, all on-device (no AI, no network) ----
+// semi: pitch shift in semitones (speed stays the same); low/high: warmth and brightness (dB);
+// breath: airy noise that follows the voice; robot: metallic ring modulation; band: phone/radio band;
+// verb: room reverb amount; echo: repeating echo; comp: smooths loudness for a close, intimate sound.
+const FX={
+  normal:{label:"Normal",semi:0},
+  deep:{label:"Deep",semi:-4,low:5,high:-2,comp:true},
+  husky:{label:"Husky",semi:-2,low:3,high:-5,breath:.16,comp:true,verb:.12},
+  flat:{label:"Flat robot",semi:-1,robot:55,comp:true},
+  chipmunk:{label:"Chipmunk",semi:7,high:2},
+  giant:{label:"Giant",semi:-9,low:6,verb:.25},
+  radio:{label:"Old radio",semi:0,band:true},
+  hall:{label:"Echo hall",semi:0,verb:.45,echo:true},
+};
+// Pitch shift without changing speed: time-stretch with WSOLA (overlap-add of grains that line up
+// with each other), then resample back to the original length.
+function pitchShift(x,sr,semi){
+  const r=2**(semi/12);if(Math.abs(r-1)<1e-3)return x;
+  const N=Math.round(sr*0.04)&~1,Hs=N/2,Ha=Hs/r,tol=Math.round(sr*0.012);
+  const w=new Float32Array(N);for(let i=0;i<N;i++)w[i]=0.5-0.5*Math.cos(2*Math.PI*i/N);
+  const outLen=Math.ceil(x.length*r)+N,y=new Float32Array(outLen),ws=new Float32Array(outLen);
+  let prev=0;
+  for(let k=0;;k++){
+    const o=k*Hs;if(o+N>outLen)break;
+    let pos=0;
+    if(k>0){
+      const nom=Math.round(k*Ha),tpl=prev+Hs;
+      if(nom+N+tol>=x.length||tpl+N>=x.length)break;
+      let bv=-Infinity;pos=nom;
+      for(let d=-tol;d<=tol;d+=2){const p=nom+d;if(p<0)continue;let c=0;for(let i=0;i<N;i+=4)c+=x[p+i]*x[tpl+i];if(c>bv){bv=c;pos=p}}
+    }
+    for(let i=0;i<N;i++){y[o+i]+=x[pos+i]*w[i];ws[o+i]+=w[i]}
+    prev=pos;
+  }
+  for(let i=0;i<outLen;i++)if(ws[i]>1e-3)y[i]/=ws[i];
+  const z=new Float32Array(x.length);
+  for(let i=0;i<z.length;i++){const p=i*r,j=Math.floor(p),f=p-j;z[i]=(y[j]||0)*(1-f)+(y[j+1]||0)*f}
+  return z;
+}
+function mono(buf){
+  const n=buf.numberOfChannels,x=new Float32Array(buf.length);
+  for(let c=0;c<n;c++){const d=buf.getChannelData(c);for(let i=0;i<x.length;i++)x[i]+=d[i]/n}
+  return x;
+}
+async function renderFx(buf,key,semi){
+  const P=FX[key],sr=buf.sampleRate;let x=pitchShift(mono(buf),sr,semi);
+  if(P.breath){ // airy, high-pitched noise shaped by the voice's own loudness
+    const a=Math.exp(-1/(sr*0.015));let env=0,lp=0,prevN=0,hp=0;
+    for(let i=0;i<x.length;i++){env=Math.max(Math.abs(x[i]),env*a);const n=Math.random()*2-1;hp=0.95*(hp+n-prevN);prevN=n;lp+=0.5*(hp-lp);x[i]+=lp*env*P.breath*3}
+  }
+  const tail=(P.verb||P.echo)?Math.round(sr*1.8):0,oc=new OfflineAudioContext(1,x.length+tail,sr);
+  const b=oc.createBuffer(1,x.length,sr);b.copyToChannel(x,0);
+  const src=oc.createBufferSource();src.buffer=b;let node=src;
+  const add=n=>{node.connect(n);node=n};
+  const biquad=(type,fq,gain,q)=>{const f=oc.createBiquadFilter();f.type=type;f.frequency.value=fq;if(gain!==undefined)f.gain.value=gain;if(q)f.Q.value=q;add(f)};
+  if(P.low)biquad("lowshelf",180,P.low);
+  if(P.high)biquad("highshelf",4000,P.high);
+  if(P.band){biquad("highpass",450,undefined,0.9);biquad("lowpass",3000,undefined,0.9);biquad("peaking",1500,6,1);
+    const sh=oc.createWaveShaper(),c=new Float32Array(1024);for(let i=0;i<1024;i++){const v=i/511.5-1;c[i]=Math.tanh(v*3)}sh.curve=c;add(sh)}
+  if(P.robot){const g=oc.createGain();g.gain.value=0;const lfo=oc.createOscillator();lfo.frequency.value=P.robot;lfo.connect(g.gain);lfo.start();add(g)}
+  if(P.comp){const c=oc.createDynamicsCompressor();c.threshold.value=-28;c.ratio.value=4;c.attack.value=0.005;c.release.value=0.15;add(c)}
+  node.connect(oc.destination);
+  if(P.verb){
+    const ir=oc.createBuffer(1,Math.round(sr*1.6),sr),d=ir.getChannelData(0);
+    for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,3);
+    const cv=oc.createConvolver();cv.buffer=ir;const wet=oc.createGain();wet.gain.value=P.verb;node.connect(cv);cv.connect(wet);wet.connect(oc.destination);
+  }
+  if(P.echo){const dl=oc.createDelay(1);dl.delayTime.value=0.28;const fb=oc.createGain();fb.gain.value=0.38;node.connect(dl);dl.connect(fb);fb.connect(dl);dl.connect(oc.destination)}
+  src.start();
+  let out=await oc.startRendering(),d=out.getChannelData(0),pk=0;for(let i=0;i<d.length;i++)pk=Math.max(pk,Math.abs(d[i]));
+  if(pk===0){ // some embedded browsers render offline audio as silence: keep at least the pitch change
+    out=AC().createBuffer(1,x.length,sr);out.copyToChannel(x,0);d=out.getChannelData(0);for(let i=0;i<d.length;i++)pk=Math.max(pk,Math.abs(d[i]));
+  }
+  if(pk>0){const k=0.9/pk;for(let i=0;i<d.length;i++)d[i]*=k}
+  return out;
+}
+function wav(buf){ // 16-bit PCM mono WAV
+  const d=buf.getChannelData(0),sr=buf.sampleRate,ab=new ArrayBuffer(44+d.length*2),v=new DataView(ab);
+  const s=(o,t)=>{for(let i=0;i<t.length;i++)v.setUint8(o+i,t.charCodeAt(i))};
+  s(0,"RIFF");v.setUint32(4,36+d.length*2,true);s(8,"WAVE");s(12,"fmt ");v.setUint32(16,16,true);v.setUint16(20,1,true);v.setUint16(22,1,true);
+  v.setUint32(24,sr,true);v.setUint32(28,sr*2,true);v.setUint16(32,2,true);v.setUint16(34,16,true);s(36,"data");v.setUint32(40,d.length*2,true);
+  for(let i=0;i<d.length;i++)v.setInt16(44+i*2,Math.max(-1,Math.min(1,d[i]))*32767,true);
+  return new Blob([ab],{type:"audio/wav"});
+}
+let fxKey="normal",fxBuf=null,fxJob=0,fxTimer=0;
+async function updateFx(playAfter){
+  if(!orig)return;const job=++fxJob;
+  ["pfx","pfxr","sfx"].forEach(i=>$(i).disabled=true);$("fxmsg").textContent="Twisting your voice…";
+  await new Promise(r=>setTimeout(r,20)); // let the message paint before the heavy work
+  let b;try{b=await renderFx(orig,fxKey,+$("semi").value)}catch(e){if(job===fxJob)$("fxmsg").textContent="Couldn't apply that effect in this browser.";return}
+  if(job!==fxJob)return; // a newer choice replaced this one
+  fxBuf=b;draw($("cfx"),fxBuf,css("--wave2"));
+  ["pfx","pfxr","sfx"].forEach(i=>$(i).disabled=false);$("fxmsg").textContent=FX[fxKey].label+(+$("semi").value?`, pitch ${$("semi").value>0?"+":""}${$("semi").value}`:"")+". Ready.";
+  if(playAfter)play(fxBuf);
+}
+Object.entries(FX).forEach(([k,p])=>{
+  const b=document.createElement("button");b.className="chip";b.textContent=p.label;b.dataset.fx=k;b.setAttribute("aria-pressed",k===fxKey);
+  b.onclick=()=>{fxKey=k;document.querySelectorAll(".chip").forEach(c=>c.setAttribute("aria-pressed",c.dataset.fx===k));
+    $("semi").value=p.semi;$("semiv").textContent=(p.semi>0?"+":"")+p.semi;if(orig)updateFx(true)};
+  $("fxchips").appendChild(b);
+});
+$("semi").oninput=()=>{const v=+$("semi").value;$("semiv").textContent=(v>0?"+":"")+v;clearTimeout(fxTimer);fxTimer=setTimeout(()=>updateFx(true),300)};
+$("pfx").onclick=()=>play(fxBuf);
+$("pfxr").onclick=()=>play(reverse(fxBuf));
+$("sfx").onclick=()=>{
+  const url=URL.createObjectURL(wav(fxBuf)),a=document.createElement("a");a.href=url;a.download=`reverso-${fxKey}.wav`;
+  document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),5000);
+};
+
 $("r1").onclick=()=>toggleRec($("r1"),$("t1"),setOriginal);
 $("r3").onclick=()=>toggleRec($("r3"),$("t3"),setAttempt);
 $("f1").onchange=e=>fromFile(e.target,setOriginal);
@@ -233,7 +363,7 @@ $("p1").onclick=()=>play(orig);$("p2").onclick=()=>play(rev);$("p3").onclick=()=
 $("both").onclick=async()=>{await play(orig);await play(back)};
 $("again").onclick=()=>{back=null;draw($("c3"),null);$("p3").disabled=true;$("t3").textContent="0.0 s";resetScore();$("r3").focus()};
 if(!window.MediaRecorder||!navigator.mediaDevices){$("r1").disabled=$("r3").disabled=true;showMsg("Recording isn't supported in this browser. Use Upload audio.")}
-addEventListener("resize",()=>{draw($("c1"),orig,css("--wave"));draw($("c2"),rev,css("--wave"));draw($("c3"),back,css("--wave2"))});
+addEventListener("resize",()=>{draw($("cfx"),fxBuf,css("--wave2"));draw($("c1"),orig,css("--wave"));draw($("c2"),rev,css("--wave"));draw($("c3"),back,css("--wave2"))});
 })();
 </script>
 
