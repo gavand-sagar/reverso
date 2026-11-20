@@ -112,6 +112,7 @@ footer{color:var(--muted);font-size:13px;text-align:center}
     <ul class="takes" id="takes" aria-label="Your clips"></ul>
     <h3 class="sub">Style</h3>
     <div class="chips" id="fxchips" role="group" aria-label="Voice style"></div>
+    <div class="sliders" id="mainsliders"></div>
     <details class="fine" id="fine">
       <summary>Fine-tune</summary>
       <div class="sliders" id="sliders"></div>
@@ -206,8 +207,13 @@ function draw(canvas,buf,color){
   for(let x=0;x<w;x+=2*dpr){let m=0;const s=Math.floor(x/w*d.length);for(let i=0;i<step;i++)m=Math.max(m,Math.abs(d[s+i]||0));
     const bh=Math.max(1,m*h*.9);g.fillRect(x,(h-bh)/2,dpr*1.2,bh);}
 }
+// Browsers keep audio paused until the page resumes it during a tap or click. The context can be created
+// before any tap (saved clips load on page open, recordings decode after Stop), so every play and every
+// Record/Upload tap resumes it.
+function unlock(){const c=AC();if(c.state!=="running")c.resume().catch(()=>{});return c}
 function play(buf){
-  stop();const src=AC().createBufferSource();src.buffer=buf;src.connect(AC().destination);src.start();playing=src;
+  if(!buf)return Promise.resolve();
+  stop();unlock();const src=AC().createBufferSource();src.buffer=buf;src.connect(AC().destination);src.start();playing=src;
   return new Promise(r=>src.onended=r);
 }
 function stop(){try{playing&&playing.stop()}catch(e){}playing=null}
@@ -252,6 +258,7 @@ function verdict(s){
 // Recording (works on HTTPS or localhost; upload is the fallback)
 let rec=null,chunks=[],timer=null;
 async function toggleRec(btn,timeEl,onDone,opt={}){
+  unlock();
   if(rec&&rec.state==="recording"){rec.stop();return}
   let stream;
   try{stream=await navigator.mediaDevices.getUserMedia({audio:opt.clean?{echoCancellation:false,noiseSuppression:false,autoGainControl:false}:{echoCancellation:true,noiseSuppression:true}})}
@@ -492,8 +499,8 @@ function renderChips(){
   mine.forEach(m=>chip("mine:"+m.name,m.name,m.params,true));
 }
 function buildSliders(){
-  const box=$("sliders");
   SLIDERS.forEach(s=>{
+    const box=s.k==="semi"?$("mainsliders"):$("sliders"); // pitch stays visible; the rest live under Fine-tune
     const l=document.createElement("label");l.className="slider";l.htmlFor="p-"+s.k;
     l.innerHTML=`<span>${s.label}</span><input type="range" id="p-${s.k}" min="${s.min}" max="${s.max}" step="${s.step}"><output id="o-${s.k}"></output>`;
     box.append(l);
@@ -538,6 +545,7 @@ $("sall").onclick=async()=>{ // every clip in the library, with the current styl
 };
 let clipNo=0;
 $("rt").onclick=()=>toggleRec($("rt"),$("tt"),buf=>{$("tt").textContent="";addClip(buf,"Clip "+(clips.length+1))},{clean:$("clean").checked,max:180});
+$("ft").onclick=unlock;$("f1").addEventListener("click",unlock);$("f3").addEventListener("click",unlock);
 $("ft").onchange=async e=>{const f=e.target.files[0];e.target.value="";if(!f)return;
   if(!f.type.startsWith("audio/")){$("fxmsg").textContent="That file isn't audio.";return}
   try{addClip(await decode(f),f.name.replace(/\.[^.]+$/,"").slice(0,40))}catch(err){$("fxmsg").textContent="Couldn't read that file (max 15 MB)."}};
