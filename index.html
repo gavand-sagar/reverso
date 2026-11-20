@@ -11,7 +11,9 @@
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary">
 <meta name="theme-color" content="#6c3df4">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%236c3df4'/%3E%3Cpath d='M20 9l-9 7 9 7z' fill='white'/%3E%3C/svg%3E">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
@@ -432,18 +434,28 @@ function download(blob,name){
 }
 const safe=s=>(s||"clip").replace(/[^\w\- ]+/g,"").trim().replace(/\s+/g,"-").toLowerCase()||"clip";
 
-// Saved on this device: current settings and your own named styles (localStorage)
-const store={get(k,d){try{const v=localStorage.getItem("reverso-"+k);return v?JSON.parse(v):d}catch(e){return d}},
-  set(k,v){try{localStorage.setItem("reverso-"+k,JSON.stringify(v))}catch(e){}}};
-let P={...BASE,...store.get("fx",{})},styleId=store.get("style","normal"),mine=store.get("presets",[]);
+// Everything is saved on this device in IndexedDB (database "reverso"):
+//   clips    – raw recordings, so clips survive a reload
+//   settings – current style and sliders, your named styles, mic and trim choices
+const idb={db:null,
+  open(){if(this.db)return Promise.resolve(this.db);return new Promise((res,rej)=>{const r=indexedDB.open("reverso",2);
+    r.onupgradeneeded=()=>{const db=r.result;if(!db.objectStoreNames.contains("clips"))db.createObjectStore("clips",{keyPath:"id"});
+      if(!db.objectStoreNames.contains("settings"))db.createObjectStore("settings")};
+    r.onsuccess=()=>{this.db=r.result;res(r.result)};r.onerror=()=>rej(r.error);r.onblocked=()=>rej(new Error("blocked"))})},
+  async tx(name,mode,fn){const db=await this.open();return new Promise((res,rej)=>{const t=db.transaction(name,mode),q=fn(t.objectStore(name));t.oncomplete=()=>res(q&&q.result);t.onerror=()=>rej(t.error)})},
+  all(){return this.tx("clips","readonly",s=>s.getAll())},put(c){return this.tx("clips","readwrite",s=>s.put(c))},del(id){return this.tx("clips","readwrite",s=>s.delete(id))}};
+const KEYS=["fx","style","presets","clean","trim"];
+const store={cache:{},
+  async load(){
+    try{const vals=await idb.tx("settings","readonly",s=>s.getAll()),keys=await idb.tx("settings","readonly",s=>s.getAllKeys());keys.forEach((k,i)=>this.cache[k]=vals[i])}catch(e){}
+    // one-time move of settings an earlier version kept in localStorage
+    try{for(const k of KEYS){const v=localStorage.getItem("reverso-"+k);if(v!==null){if(!(k in this.cache))this.set(k,JSON.parse(v));localStorage.removeItem("reverso-"+k)}}}catch(e){}
+  },
+  get(k,d){return k in this.cache?this.cache[k]:d},
+  set(k,v){this.cache[k]=v;idb.tx("settings","readwrite",s=>s.put(JSON.parse(JSON.stringify(v)),k)).catch(()=>{})}};
+let P={...BASE},styleId="normal",mine=[];
 const styleName=()=>styleId.startsWith("mine:")?(mine.find(m=>"mine:"+m.name===styleId)||{}).name||"custom":(FX[styleId]?FX[styleId].label:"custom");
 
-// Clip library: raw recordings in IndexedDB, so clips survive a reload
-const idb={db:null,
-  open(){if(this.db)return Promise.resolve(this.db);return new Promise((res,rej)=>{const r=indexedDB.open("reverso",1);
-    r.onupgradeneeded=()=>r.result.createObjectStore("clips",{keyPath:"id"});r.onsuccess=()=>{this.db=r.result;res(r.result)};r.onerror=()=>rej(r.error)})},
-  async tx(mode,fn){const db=await this.open();return new Promise((res,rej)=>{const t=db.transaction("clips",mode),s=t.objectStore("clips"),q=fn(s);t.oncomplete=()=>res(q&&q.result);t.onerror=()=>rej(t.error)})},
-  all(){return this.tx("readonly",s=>s.getAll())},put(c){return this.tx("readwrite",s=>s.put(c))},del(id){return this.tx("readwrite",s=>s.delete(id))}};
 let clips=[],selId=null; // {id,name,created,buf,saved}
 const sel=()=>clips.find(c=>c.id===selId)||null;
 async function addClip(buf,name){
@@ -549,9 +561,17 @@ $("ft").onclick=unlock;$("f1").addEventListener("click",unlock);$("f3").addEvent
 $("ft").onchange=async e=>{const f=e.target.files[0];e.target.value="";if(!f)return;
   if(!f.type.startsWith("audio/")){$("fxmsg").textContent="That file isn't audio.";return}
   try{addClip(await decode(f),f.name.replace(/\.[^.]+$/,"").slice(0,40))}catch(err){$("fxmsg").textContent="Couldn't read that file (max 15 MB)."}};
-$("clean").checked=store.get("clean",false);$("clean").onchange=()=>store.set("clean",$("clean").checked);
-$("trim").checked=store.get("trim",true);$("trim").onchange=()=>store.set("trim",$("trim").checked);
-buildSliders();syncControls();renderChips();renderClips();loadClips();
+$("clean").onchange=()=>store.set("clean",$("clean").checked);
+$("trim").onchange=()=>store.set("trim",$("trim").checked);
+buildSliders();syncControls();renderChips();renderClips();
+(async()=>{ // restore saved settings, then clips
+  await store.load();
+  P={...BASE,...store.get("fx",{})};styleId=store.get("style","normal");mine=store.get("presets",[]);
+  $("clean").checked=store.get("clean",false);$("trim").checked=store.get("trim",true);
+  syncControls();renderChips();loadClips();
+})();
+// Offline: cache the app so it opens without a connection
+if("serviceWorker" in navigator&&location.protocol==="https:")navigator.serviceWorker.register("/sw.js").catch(()=>{});
 
 $("r1").onclick=()=>toggleRec($("r1"),$("t1"),setOriginal);
 $("r3").onclick=()=>toggleRec($("r3"),$("t3"),setAttempt);

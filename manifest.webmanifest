@@ -1,0 +1,13 @@
+{
+  "name": "Reverso Voice Twister",
+  "short_name": "Reverso",
+  "description": "Record voice clips, give them a new voice and download WAV voiceovers. Works offline; nothing is uploaded.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#13101d",
+  "theme_color": "#6c3df4",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
