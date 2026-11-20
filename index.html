@@ -68,6 +68,20 @@ button:disabled{opacity:.4;cursor:not-allowed}
 .meter i{display:block;height:100%;width:0;background:var(--accent);transition:width .6s}
 .msg{font-size:14px;color:var(--rec);margin:0}
 footer{color:var(--muted);font-size:13px;text-align:center}
+/* Now-playing bar */
+.player{position:fixed;left:0;right:0;bottom:0;z-index:20;display:flex;align-items:center;gap:12px;
+  padding:10px max(16px,env(safe-area-inset-right,0px)) calc(10px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px));
+  background:var(--surface);border-top:1px solid var(--line);box-shadow:0 -8px 24px color-mix(in srgb,#000 18%,transparent)}
+.player .pp{width:52px;height:52px;padding:0;border-radius:50%;background:var(--accent);border-color:var(--accent);color:var(--accent-ink);flex:none}
+.player svg{width:22px;height:22px;fill:currentColor}
+.player .i-play,.player .pp.paused .i-pause{display:none}.player .pp.paused .i-play{display:block}
+.player .pstop{width:44px;height:44px;padding:0;border-radius:50%;flex:none}
+.pinfo{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;max-width:560px;margin:0 auto}
+.ptitle{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pinfo input{width:100%;accent-color:var(--accent);height:20px;margin:0}
+.ptime{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+body.has-player{padding-bottom:calc(110px + env(safe-area-inset-bottom,0px))}
+.take.empty{border-style:dashed;justify-content:center;color:var(--muted);font-size:14px;padding:14px;text-align:center}
 .part{padding:20px 4px 0;border-top:1px solid var(--line);margin-top:8px}
 .part h2{font-family:var(--display);font-weight:500;font-size:1.3rem;margin:0}
 .part p{color:var(--muted);margin:4px 0 0;font-size:14px}
@@ -120,8 +134,9 @@ footer{color:var(--muted);font-size:13px;text-align:center}
       <label class="file">Upload clip<input type="file" id="ft" accept="audio/*"></label>
       <label class="check" for="clean"><input type="checkbox" id="clean"> Clean mic (no noise filter)</label>
     </div>
+    <h3 class="sub">Your clips</h3>
     <ul class="takes" id="takes" aria-label="Your clips"></ul>
-    <h3 class="sub">Style</h3>
+    <h3 class="sub">Voice</h3>
     <div class="chips" id="fxchips" role="group" aria-label="Voice style"></div>
     <details class="fine" id="fine" open>
       <summary><span class="fine-h"><span class="fine-t">Adjust the sound</span><span class="fine-s" id="finesum">Pitch, monotone, warmth, brightness, breath, room, echo, robot</span></span></summary>
@@ -135,6 +150,7 @@ footer{color:var(--muted);font-size:13px;text-align:center}
       <input id="pname" type="text" maxlength="24" placeholder="Name this style" aria-label="Style name" autocomplete="off">
       <button id="psave" type="submit">Save style</button>
     </form>
+    <h3 class="sub">Listen and save</h3>
     <canvas id="cfx" aria-label="Twisted waveform"></canvas>
     <div class="row">
       <button class="primary" id="pfx" disabled>Play twisted</button>
@@ -193,8 +209,21 @@ footer{color:var(--muted);font-size:13px;text-align:center}
     </div>
   </section>
 
-  <footer>Audio never leaves your device. Nothing is uploaded or stored.</footer>
+  <footer>Audio never leaves your device. Nothing is uploaded.</footer>
 </main>
+
+<div class="player" id="player" role="region" aria-label="Now playing" hidden>
+  <button class="pp" id="pp" aria-label="Pause">
+    <svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+    <svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+  </button>
+  <div class="pinfo">
+    <div class="ptitle" id="ptitle"></div>
+    <input type="range" id="pseek" min="0" max="1000" value="0" aria-label="Playback position">
+    <div class="ptime"><span id="pcur">0:00</span><span id="pdur">0:00</span></div>
+  </div>
+  <button class="pstop" id="pstop" aria-label="Stop"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
+</div>
 
 <script>
 (()=>{
@@ -221,12 +250,38 @@ function draw(canvas,buf,color){
 // before any tap (saved clips load on page open, recordings decode after Stop), so every play and every
 // Record/Upload tap resumes it.
 function unlock(){const c=AC();if(c.state!=="running")c.resume().catch(()=>{});return c}
-function play(buf){
-  if(!buf)return Promise.resolve();
-  stop();unlock();const src=AC().createBufferSource();src.buffer=buf;src.connect(AC().destination);src.start();playing=src;
-  return new Promise(r=>src.onended=r);
+// Player: one sound at a time, shown in the bar at the bottom with pause, stop and a position slider.
+// A buffer source can't pause, so pausing remembers the position and resuming starts a new source there.
+const pl={src:null,buf:null,offset:0,at:0,on:false,done:null,raf:0};
+const mmss=t=>{t=Math.max(0,t);return Math.floor(t/60)+":"+String(Math.floor(t%60)).padStart(2,"0")};
+function plStart(){
+  unlock();const src=AC().createBufferSource();src.buffer=pl.buf;src.connect(AC().destination);
+  src.start(0,pl.offset);pl.src=src;pl.at=AC().currentTime-pl.offset;pl.on=true;
+  src.onended=()=>{if(pl.src===src)plFinish(true)}; // only a natural end; pause/stop detach the source first
+  plUi();plTick();
 }
-function stop(){try{playing&&playing.stop()}catch(e){}playing=null}
+function plDetach(){const s=pl.src;pl.src=null;if(s){try{s.stop()}catch(e){}}cancelAnimationFrame(pl.raf)}
+function plPos(){return pl.on?Math.min(pl.buf.duration,AC().currentTime-pl.at):pl.offset}
+function plTick(){const t=plPos();$("pcur").textContent=mmss(t);if(!seeking)$("pseek").value=Math.round(t/pl.buf.duration*1000);if(pl.on)pl.raf=requestAnimationFrame(plTick)}
+function plUi(){
+  $("player").hidden=!pl.buf;document.body.classList.toggle("has-player",!!pl.buf);if(!pl.buf)return;
+  $("pp").setAttribute("aria-label",pl.on?"Pause":"Play");$("pp").classList.toggle("paused",!pl.on);
+  $("pdur").textContent=mmss(pl.buf.duration);$("pcur").textContent=mmss(plPos());
+}
+function plFinish(natural){plDetach();pl.on=false;const d=pl.done;pl.done=null;pl.buf=null;plUi();if(d)d(natural)}
+function play(buf,label="Audio"){ // resolves true when it plays to the end, false if stopped or replaced
+  if(!buf)return Promise.resolve(false);
+  if(pl.buf)plFinish(false);
+  pl.buf=buf;pl.offset=0;$("ptitle").textContent=label;
+  const p=new Promise(r=>pl.done=r);plStart();return p;
+}
+function stop(){if(pl.buf)plFinish(false)}
+function togglePause(){
+  if(!pl.buf)return;
+  if(pl.on){pl.offset=plPos();plDetach();pl.on=false;plUi();plTick()}
+  else{if(pl.offset>=pl.buf.duration-0.02)pl.offset=0;plStart()}
+}
+let seeking=false;
 
 // Score: compare loudness envelopes (rhythm) and pitch contours, allowing a small timing offset.
 function envelope(buf,hop){
@@ -268,7 +323,7 @@ function verdict(s){
 // Recording (works on HTTPS or localhost; upload is the fallback)
 let rec=null,chunks=[],timer=null;
 async function toggleRec(btn,timeEl,onDone,opt={}){
-  unlock();
+  unlock();stop();
   if(rec&&rec.state==="recording"){rec.stop();return}
   let stream;
   try{stream=await navigator.mediaDevices.getUserMedia({audio:opt.clean?{echoCancellation:false,noiseSuppression:false,autoGainControl:false}:{echoCancellation:true,noiseSuppression:true}})}
@@ -484,14 +539,15 @@ function renderClips(){
   const ul=$("takes");ul.textContent="";
   const list=clips.slice();if(orig)list.push({id:"game",name:"Step 1 recording",buf:orig,game:true});
   if(!sel()&&orig)selId="game";
+  if(!list.length){const li=document.createElement("li");li.className="take empty";li.textContent="No clips yet. Tap Record clip, or upload an audio file.";ul.append(li)}
   list.forEach(c=>{
     const li=document.createElement("li");li.className="take"+(c.id===selId||(c.game&&selId==="game")?" on":"");
     const pick=document.createElement("button");pick.className="pick";pick.setAttribute("aria-pressed",li.classList.contains("on"));
     pick.title="Twist this clip";pick.textContent=c.buf.duration.toFixed(1)+" s";pick.onclick=()=>{selId=c.id;renderClips();updateFx(false)};
     const nm=document.createElement("input");nm.value=c.name;nm.maxLength=40;nm.setAttribute("aria-label","Clip name");nm.disabled=!!c.game;
     nm.onchange=async()=>{c.name=nm.value.trim()||"Clip";nm.value=c.name;if(c.saved){try{const rows=await idb.all();const r=rows.find(x=>x.id===c.id);if(r){r.name=c.name;await idb.put(r)}}catch(e){}}};
-    const pl=document.createElement("button");pl.textContent="Play";pl.onclick=()=>play(c.buf);
-    li.append(pick,nm,pl);
+    const pb=document.createElement("button");pb.textContent="Play";pb.onclick=()=>play(c.buf,c.name+" · original");
+    li.append(pick,nm,pb);
     if(!c.game){const del=document.createElement("button");del.textContent="Delete";let armed=0;
       del.onclick=async()=>{if(!armed){armed=setTimeout(()=>{armed=0;del.textContent="Delete"},3000);del.textContent="Sure?";return}
         clearTimeout(armed);clips=clips.filter(x=>x!==c);if(selId===c.id)selId=clips[0]?clips[0].id:(orig?"game":null);
@@ -557,10 +613,10 @@ async function updateFx(playAfter){
   if(job!==fxJob)return; // a newer choice replaced this one
   fxBuf=b;draw($("cfx"),fxBuf,css("--wave2"));setBtns();
   $("fxmsg").textContent=`${srcName()} · ${styleName()}${P.semi?`, pitch ${P.semi>0?"+":""}${P.semi}`:""}. Ready.`;
-  if(playAfter)play(fxBuf);
+  if(playAfter)play(fxBuf,`${srcName()} · ${styleName()}`);
 }
-$("pfx").onclick=()=>play(fxBuf);
-$("pfxr").onclick=()=>play(reverse(fxBuf));
+$("pfx").onclick=()=>play(fxBuf,`${srcName()} · ${styleName()}`);
+$("pfxr").onclick=()=>play(reverse(fxBuf),`${srcName()} · ${styleName()} · backwards`);
 $("sfx").onclick=()=>{const b=$("trim").checked?trim(fxBuf):fxBuf;download(wav(b),`${safe(srcName())}-${safe(styleName())}.wav`)};
 $("sall").onclick=async()=>{ // every clip in the library, with the current style, one file each
   $("sall").disabled=true;let n=0;
@@ -587,12 +643,19 @@ buildSliders();syncControls();renderChips();renderClips();
 // Offline: cache the app so it opens without a connection
 if("serviceWorker" in navigator&&location.protocol==="https:")navigator.serviceWorker.register("/sw.js").catch(()=>{});
 
+$("pp").onclick=togglePause;$("pstop").onclick=stop;
+$("pseek").addEventListener("input",()=>{seeking=true;if(pl.buf)$("pcur").textContent=mmss($("pseek").value/1000*pl.buf.duration)});
+$("pseek").addEventListener("change",()=>{seeking=false;if(!pl.buf)return;const t=$("pseek").value/1000*pl.buf.duration,was=pl.on;plDetach();pl.on=false;pl.offset=t;if(was)plStart();else{plUi();plTick()}});
+document.addEventListener("keydown",e=>{ // Space pauses/resumes, Escape stops (not while typing)
+  if(!pl.buf||["INPUT","TEXTAREA","SELECT","BUTTON"].includes(e.target.tagName)&&e.target.type!=="range")return;
+  if(e.code==="Space"){e.preventDefault();togglePause()}else if(e.key==="Escape")stop();
+});
 $("r1").onclick=()=>toggleRec($("r1"),$("t1"),setOriginal);
 $("r3").onclick=()=>toggleRec($("r3"),$("t3"),setAttempt);
 $("f1").onchange=e=>fromFile(e.target,setOriginal);
 $("f3").onchange=e=>fromFile(e.target,setAttempt);
-$("p1").onclick=()=>play(orig);$("p2").onclick=()=>play(rev);$("p3").onclick=()=>play(back);
-$("both").onclick=async()=>{await play(orig);await play(back)};
+$("p1").onclick=()=>play(orig,"Game · your jingle");$("p2").onclick=()=>play(rev,"Game · jingle backwards");$("p3").onclick=()=>play(back,"Game · your attempt, flipped back");
+$("both").onclick=async()=>{if(await play(orig,"Game · your jingle"))await play(back,"Game · your attempt, flipped back")};
 $("again").onclick=()=>{back=null;draw($("c3"),null);$("p3").disabled=true;$("t3").textContent="0.0 s";resetScore();$("r3").focus()};
 if(!window.MediaRecorder||!navigator.mediaDevices){$("r1").disabled=$("r3").disabled=true;showMsg("Recording isn't supported in this browser. Use Upload audio.")}
 addEventListener("resize",()=>{draw($("cfx"),fxBuf,css("--wave2"));draw($("c1"),orig,css("--wave"));draw($("c2"),rev,css("--wave"));draw($("c3"),back,css("--wave2"))});
