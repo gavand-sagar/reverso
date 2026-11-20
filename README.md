@@ -1,6 +1,6 @@
 # Reverso
 
-A backwards-singing game. Record a jingle, hear it reversed, sing the reversed version, and the app flips your attempt back and scores how close it is to the original.
+A voice twister for voiceovers: record clips, give them a new voice (deep, husky, monotone, robot, chipmunk, radio and more) and download WAVs. Plus a reverse-singing game.
 
 Single static `index.html`, no build step. All audio stays in the browser.
 
