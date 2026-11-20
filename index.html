@@ -84,7 +84,16 @@ footer{color:var(--muted);font-size:13px;text-align:center}
 .take button{min-height:40px;padding:8px 12px;font-size:13px}
 .take .pick{font-family:var(--mono);font-variant-numeric:tabular-nums;min-width:64px}
 .take.on .pick{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
-.fine summary{cursor:pointer;font-weight:600;min-height:44px;display:flex;align-items:center}
+.fine{border:1px solid var(--line);border-radius:16px;padding:0 14px;background:color-mix(in srgb,var(--accent) 5%,transparent)}
+.fine summary{cursor:pointer;list-style:none;min-height:60px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0}
+.fine summary::-webkit-details-marker{display:none}
+.fine summary::after{content:"";flex:none;width:9px;height:9px;margin-right:4px;border-right:2px solid var(--accent);border-bottom:2px solid var(--accent);transform:rotate(45deg);transition:transform .2s}
+.fine[open] summary::after{transform:rotate(-135deg)}
+.fine[open] summary{border-bottom:1px solid var(--line);margin-bottom:8px}
+.fine-h{display:flex;flex-direction:column;gap:2px;min-width:0}
+.fine-t{font-weight:600}
+.fine-s{font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+.fine .sliders{padding-bottom:4px}
 .sliders{display:flex;flex-direction:column;gap:2px}
 .slider span{min-width:6.5em}
 #saveform input{flex:1;min-width:0;font:inherit;color:var(--ink);background:transparent;border:1px solid var(--line);border-radius:999px;padding:10px 16px;min-height:46px}
@@ -114,9 +123,8 @@ footer{color:var(--muted);font-size:13px;text-align:center}
     <ul class="takes" id="takes" aria-label="Your clips"></ul>
     <h3 class="sub">Style</h3>
     <div class="chips" id="fxchips" role="group" aria-label="Voice style"></div>
-    <div class="sliders" id="mainsliders"></div>
-    <details class="fine" id="fine">
-      <summary>Fine-tune</summary>
+    <details class="fine" id="fine" open>
+      <summary><span class="fine-h"><span class="fine-t">Adjust the sound</span><span class="fine-s" id="finesum">Pitch, monotone, warmth, brightness, breath, room, echo, robot</span></span></summary>
       <div class="sliders" id="sliders"></div>
       <div class="row">
         <label class="check" for="p-comp"><input type="checkbox" id="p-comp"> Smooth volume</label>
@@ -444,7 +452,7 @@ const idb={db:null,
     r.onsuccess=()=>{this.db=r.result;res(r.result)};r.onerror=()=>rej(r.error);r.onblocked=()=>rej(new Error("blocked"))})},
   async tx(name,mode,fn){const db=await this.open();return new Promise((res,rej)=>{const t=db.transaction(name,mode),q=fn(t.objectStore(name));t.oncomplete=()=>res(q&&q.result);t.onerror=()=>rej(t.error)})},
   all(){return this.tx("clips","readonly",s=>s.getAll())},put(c){return this.tx("clips","readwrite",s=>s.put(c))},del(id){return this.tx("clips","readwrite",s=>s.delete(id))}};
-const KEYS=["fx","style","presets","clean","trim"];
+const KEYS=["fx","style","presets","clean","trim","fineOpen"];
 const store={cache:{},
   async load(){
     try{const vals=await idb.tx("settings","readonly",s=>s.getAll()),keys=await idb.tx("settings","readonly",s=>s.getAllKeys());keys.forEach((k,i)=>this.cache[k]=vals[i])}catch(e){}
@@ -512,15 +520,21 @@ function renderChips(){
 }
 function buildSliders(){
   SLIDERS.forEach(s=>{
-    const box=s.k==="semi"?$("mainsliders"):$("sliders"); // pitch stays visible; the rest live under Fine-tune
+    const box=$("sliders");
     const l=document.createElement("label");l.className="slider";l.htmlFor="p-"+s.k;
     l.innerHTML=`<span>${s.label}</span><input type="range" id="p-${s.k}" min="${s.min}" max="${s.max}" step="${s.step}"><output id="o-${s.k}"></output>`;
     box.append(l);
-    l.querySelector("input").addEventListener("input",e=>{P[s.k]=+e.target.value;$("o-"+s.k).textContent=s.fmt(P[s.k]);changed()});
+    l.querySelector("input").addEventListener("input",e=>{P[s.k]=+e.target.value;$("o-"+s.k).textContent=s.fmt(P[s.k]);fineSummary();changed()});
   });
-  ["comp","band"].forEach(k=>$("p-"+k).addEventListener("change",e=>{P[k]=e.target.checked;changed()}));
+  ["comp","band"].forEach(k=>$("p-"+k).addEventListener("change",e=>{P[k]=e.target.checked;fineSummary();changed()}));
 }
-function syncControls(){SLIDERS.forEach(s=>{$("p-"+s.k).value=P[s.k];$("o-"+s.k).textContent=s.fmt(P[s.k])});$("p-comp").checked=P.comp;$("p-band").checked=P.band}
+function syncControls(){SLIDERS.forEach(s=>{$("p-"+s.k).value=P[s.k];$("o-"+s.k).textContent=s.fmt(P[s.k])});$("p-comp").checked=P.comp;$("p-band").checked=P.band;fineSummary()}
+// The panel's subtitle lists what is currently changed, so settings are visible even when it's closed
+function fineSummary(){
+  const on=SLIDERS.filter(s=>P[s.k]).map(s=>s.label+" "+s.fmt(P[s.k]));if(P.comp)on.push("Smooth volume");if(P.band)on.push("Old radio");
+  $("finesum").textContent=on.length?on.join(" · "):"Pitch, monotone, warmth, brightness, breath, room, echo, robot";
+}
+$("fine").addEventListener("toggle",()=>store.set("fineOpen",$("fine").open));
 let fxTimer=0;
 function changed(){ // a hand-tuned setting: no chip is selected any more
   if(styleId!=="custom"){styleId="custom";renderChips()}
@@ -567,7 +581,7 @@ buildSliders();syncControls();renderChips();renderClips();
 (async()=>{ // restore saved settings, then clips
   await store.load();
   P={...BASE,...store.get("fx",{})};styleId=store.get("style","normal");mine=store.get("presets",[]);
-  $("clean").checked=store.get("clean",false);$("trim").checked=store.get("trim",true);
+  $("clean").checked=store.get("clean",false);$("trim").checked=store.get("trim",true);$("fine").open=store.get("fineOpen",true);
   syncControls();renderChips();loadClips();
 })();
 // Offline: cache the app so it opens without a connection
