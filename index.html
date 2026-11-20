@@ -67,6 +67,22 @@ button:disabled{opacity:.4;cursor:not-allowed}
 .msg{font-size:14px;color:var(--rec);margin:0}
 footer{color:var(--muted);font-size:13px;text-align:center}
 .chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip.mine{border-style:dashed}.chip.x{min-width:40px;padding:8px 0;margin-left:-6px;color:var(--muted)}
+.sub{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600;margin:4px 0 0}
+.check{display:inline-flex;align-items:center;gap:8px;font-size:14px;color:var(--muted);min-height:44px}
+.check input{width:18px;height:18px;accent-color:var(--accent)}
+.takes{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:260px;overflow-y:auto}
+.take{display:flex;align-items:center;gap:6px;padding:4px;border:1px solid var(--line);border-radius:14px}
+.take.on{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.take input{flex:1;min-width:0;font:inherit;color:var(--ink);background:transparent;border:0;padding:8px 4px;border-radius:8px}
+.take input:focus-visible{outline:2px solid var(--accent)}
+.take button{min-height:40px;padding:8px 12px;font-size:13px}
+.take .pick{font-family:var(--mono);font-variant-numeric:tabular-nums;min-width:64px}
+.take.on .pick{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.fine summary{cursor:pointer;font-weight:600;min-height:44px;display:flex;align-items:center}
+.sliders{display:flex;flex-direction:column;gap:2px}
+.slider span{min-width:6.5em}
+#saveform input{flex:1;min-width:0;font:inherit;color:var(--ink);background:transparent;border:1px solid var(--line);border-radius:999px;padding:10px 16px;min-height:46px}
 .chip{min-height:40px;padding:8px 14px;font-size:14px}
 .chip[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
 .slider{display:flex;align-items:center;gap:12px;font-size:14px;color:var(--muted)}
@@ -94,18 +110,38 @@ footer{color:var(--muted);font-size:13px;text-align:center}
     <p class="msg" id="m1" hidden></p>
   </section>
 
-  <section class="deck" id="dfx" aria-labelledby="hfx" aria-disabled="true">
-    <div class="deck-head"><span class="step">Bonus</span><h2 id="hfx">Voice twister</h2></div>
-    <p class="hint">Give your recording a new voice. Pick a style, fine-tune the pitch, then play or save it. It all runs on your device.</p>
+  <section class="deck" id="dfx" aria-labelledby="hfx">
+    <div class="deck-head"><span class="step">Studio</span><h2 id="hfx">Voice twister</h2><span class="time" id="tt"></span></div>
+    <p class="hint">Record voice clips, give them a new voice and download them as WAV for your voiceovers. Clips and styles are saved on this device only.</p>
+    <div class="row">
+      <button class="rec" id="rt"><span class="dot"></span><span>Record clip</span></button>
+      <label class="file">Upload clip<input type="file" id="ft" accept="audio/*"></label>
+      <label class="check" for="clean"><input type="checkbox" id="clean"> Clean mic (no noise filter)</label>
+    </div>
+    <ul class="takes" id="takes" aria-label="Your clips"></ul>
+    <h3 class="sub">Style</h3>
     <div class="chips" id="fxchips" role="group" aria-label="Voice style"></div>
-    <label class="slider" for="semi">Pitch <input type="range" id="semi" min="-12" max="12" step="1" value="0" disabled><output id="semiv">0</output></label>
+    <details class="fine" id="fine">
+      <summary>Fine-tune</summary>
+      <div class="sliders" id="sliders"></div>
+      <div class="row">
+        <label class="check" for="p-comp"><input type="checkbox" id="p-comp"> Smooth volume</label>
+        <label class="check" for="p-band"><input type="checkbox" id="p-band"> Old radio</label>
+      </div>
+    </details>
+    <form class="row" id="saveform">
+      <input id="pname" type="text" maxlength="24" placeholder="Name this style" aria-label="Style name" autocomplete="off">
+      <button id="psave" type="submit">Save style</button>
+    </form>
     <canvas id="cfx" aria-label="Twisted waveform"></canvas>
     <div class="row">
       <button class="primary" id="pfx" disabled>Play twisted</button>
-      <button id="pfxr" disabled>Play it backwards</button>
-      <button id="sfx" disabled>Save as WAV</button>
+      <button id="pfxr" disabled>Play backwards</button>
+      <button id="sfx" disabled>Download WAV</button>
+      <button id="sall" disabled>Download all clips</button>
     </div>
-    <p class="hint" id="fxmsg">Record something in step 1 first.</p>
+    <label class="check" for="trim"><input type="checkbox" id="trim" checked> Trim silence at the start and end of downloads</label>
+    <p class="hint" id="fxmsg" aria-live="polite">Record or upload a clip to start.</p>
   </section>
 
   <section class="deck" id="d2" aria-labelledby="h2" aria-disabled="true">
@@ -206,17 +242,17 @@ function verdict(s){
 
 // Recording (works on HTTPS or localhost; upload is the fallback)
 let rec=null,chunks=[],timer=null;
-async function toggleRec(btn,timeEl,onDone){
+async function toggleRec(btn,timeEl,onDone,opt={}){
   if(rec&&rec.state==="recording"){rec.stop();return}
   let stream;
-  try{stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}})}
+  try{stream=await navigator.mediaDevices.getUserMedia({audio:opt.clean?{echoCancellation:false,noiseSuppression:false,autoGainControl:false}:{echoCancellation:true,noiseSuppression:true}})}
   catch(e){showMsg("Microphone is blocked here. Allow mic access, or use Upload audio instead.");return}
   chunks=[];rec=new MediaRecorder(stream);const t0=performance.now();
   rec.ondataavailable=e=>e.data.size&&chunks.push(e.data);
   rec.onstop=async()=>{clearInterval(timer);stream.getTracks().forEach(t=>t.stop());btn.classList.remove("on");btn.lastChild.textContent=btn.dataset.label;
     try{onDone(await decode(new Blob(chunks,{type:rec.mimeType})))}catch(e){showMsg("Could not read that recording. Try again.")}};
   btn.dataset.label=btn.lastChild.textContent;btn.lastChild.textContent="Stop";btn.classList.add("on");rec.start();
-  timer=setInterval(()=>{const s=(performance.now()-t0)/1000;timeEl.textContent=s.toFixed(1)+" s";if(s>=20)rec.stop()},100);
+  timer=setInterval(()=>{const s=(performance.now()-t0)/1000;timeEl.textContent=s.toFixed(1)+" s";if(s>=(opt.max||20))rec.stop()},100);
 }
 async function decode(blob){
   if(blob.size>15e6)throw new Error("too big");
@@ -235,7 +271,7 @@ function setOriginal(buf){
   $("t1").textContent=buf.duration.toFixed(1)+" s";
   draw($("c1"),orig,css("--wave"));draw($("c2"),rev,css("--wave"));draw($("c3"),null);
   ["p1","p2","r3","f3"].forEach(i=>$(i).disabled=false);enable("d2",1);enable("d3",1);resetScore();
-  enable("dfx",1);$("semi").disabled=false;updateFx(false);
+  if(!clips.length||selId==="game"){selId="game";renderClips();updateFx(false)}else renderClips();
 }
 function setAttempt(buf){
   back=reverse(buf);$("t3").textContent=buf.duration.toFixed(1)+" s";
@@ -246,20 +282,30 @@ function setAttempt(buf){
 }
 function resetScore(){$("score").textContent="--";$("score").style.color="";$("verdict").textContent="Finish step 3 to see how close you got.";$("bar").style.width="0";$("both").disabled=$("again").disabled=true;enable("d4",0)}
 
-// ---- Voice twister: classic effects with the Web Audio API, all on-device (no AI, no network) ----
-// semi: pitch shift in semitones (speed stays the same); low/high: warmth and brightness (dB);
-// breath: airy noise that follows the voice; robot: metallic ring modulation; band: phone/radio band;
-// verb: room reverb amount; echo: repeating echo; comp: smooths loudness for a close, intimate sound.
+// ---- Voice twister studio: classic effects with the Web Audio API, all on-device (no AI, no network) ----
+// Settings: semi = pitch in semitones (speed unchanged); low/high = warmth/brightness in dB; breath = airy noise
+// that follows the voice; robot = ring-modulation frequency (0 = off); verb = room reverb; echo = echo feedback;
+// comp = smooth volume; band = old-radio band.
+const BASE={semi:0,low:0,high:0,breath:0,robot:0,verb:0,echo:0,comp:false,band:false};
 const FX={
-  normal:{label:"Normal",semi:0},
+  normal:{label:"Normal"},
   deep:{label:"Deep",semi:-4,low:5,high:-2,comp:true},
   husky:{label:"Husky",semi:-2,low:3,high:-5,breath:.16,comp:true,verb:.12},
   flat:{label:"Flat robot",semi:-1,robot:55,comp:true},
   chipmunk:{label:"Chipmunk",semi:7,high:2},
   giant:{label:"Giant",semi:-9,low:6,verb:.25},
-  radio:{label:"Old radio",semi:0,band:true},
-  hall:{label:"Echo hall",semi:0,verb:.45,echo:true},
+  radio:{label:"Old radio",band:true},
+  hall:{label:"Echo hall",verb:.45,echo:.38},
 };
+const SLIDERS=[
+  {k:"semi",label:"Pitch",min:-12,max:12,step:1,fmt:v=>(v>0?"+":"")+v+" st"},
+  {k:"low",label:"Warmth",min:-6,max:9,step:1,fmt:v=>(v>0?"+":"")+v+" dB"},
+  {k:"high",label:"Brightness",min:-9,max:6,step:1,fmt:v=>(v>0?"+":"")+v+" dB"},
+  {k:"breath",label:"Breath",min:0,max:.3,step:.02,fmt:v=>Math.round(v/.3*100)+"%"},
+  {k:"verb",label:"Room",min:0,max:.6,step:.05,fmt:v=>Math.round(v/.6*100)+"%"},
+  {k:"echo",label:"Echo",min:0,max:.6,step:.05,fmt:v=>Math.round(v/.6*100)+"%"},
+  {k:"robot",label:"Robot",min:0,max:120,step:5,fmt:v=>v?v+" Hz":"Off"},
+];
 // Pitch shift without changing speed: time-stretch with WSOLA (overlap-add of grains that line up
 // with each other), then resample back to the original length.
 function pitchShift(x,sr,semi){
@@ -290,13 +336,13 @@ function mono(buf){
   for(let c=0;c<n;c++){const d=buf.getChannelData(c);for(let i=0;i<x.length;i++)x[i]+=d[i]/n}
   return x;
 }
-async function renderFx(buf,key,semi){
-  const P=FX[key],sr=buf.sampleRate;let x=pitchShift(mono(buf),sr,semi);
-  if(P.breath){ // airy, high-pitched noise shaped by the voice's own loudness
+async function renderFx(buf,P){
+  const sr=buf.sampleRate;let x=pitchShift(mono(buf),sr,P.semi);
+  if(P.breath>0){ // airy, high-pitched noise shaped by the voice's own loudness
     const a=Math.exp(-1/(sr*0.015));let env=0,lp=0,prevN=0,hp=0;
     for(let i=0;i<x.length;i++){env=Math.max(Math.abs(x[i]),env*a);const n=Math.random()*2-1;hp=0.95*(hp+n-prevN);prevN=n;lp+=0.5*(hp-lp);x[i]+=lp*env*P.breath*3}
   }
-  const tail=(P.verb||P.echo)?Math.round(sr*1.8):0,oc=new OfflineAudioContext(1,x.length+tail,sr);
+  const tail=(P.verb>0||P.echo>0)?Math.round(sr*1.8):0,oc=new OfflineAudioContext(1,x.length+tail,sr);
   const b=oc.createBuffer(1,x.length,sr);b.copyToChannel(x,0);
   const src=oc.createBufferSource();src.buffer=b;let node=src;
   const add=n=>{node.connect(n);node=n};
@@ -305,15 +351,15 @@ async function renderFx(buf,key,semi){
   if(P.high)biquad("highshelf",4000,P.high);
   if(P.band){biquad("highpass",450,undefined,0.9);biquad("lowpass",3000,undefined,0.9);biquad("peaking",1500,6,1);
     const sh=oc.createWaveShaper(),c=new Float32Array(1024);for(let i=0;i<1024;i++){const v=i/511.5-1;c[i]=Math.tanh(v*3)}sh.curve=c;add(sh)}
-  if(P.robot){const g=oc.createGain();g.gain.value=0;const lfo=oc.createOscillator();lfo.frequency.value=P.robot;lfo.connect(g.gain);lfo.start();add(g)}
+  if(P.robot>0){const g=oc.createGain();g.gain.value=0;const lfo=oc.createOscillator();lfo.frequency.value=P.robot;lfo.connect(g.gain);lfo.start();add(g)}
   if(P.comp){const c=oc.createDynamicsCompressor();c.threshold.value=-28;c.ratio.value=4;c.attack.value=0.005;c.release.value=0.15;add(c)}
   node.connect(oc.destination);
-  if(P.verb){
+  if(P.verb>0){
     const ir=oc.createBuffer(1,Math.round(sr*1.6),sr),d=ir.getChannelData(0);
     for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/d.length,3);
     const cv=oc.createConvolver();cv.buffer=ir;const wet=oc.createGain();wet.gain.value=P.verb;node.connect(cv);cv.connect(wet);wet.connect(oc.destination);
   }
-  if(P.echo){const dl=oc.createDelay(1);dl.delayTime.value=0.28;const fb=oc.createGain();fb.gain.value=0.38;node.connect(dl);dl.connect(fb);fb.connect(dl);dl.connect(oc.destination)}
+  if(P.echo>0){const dl=oc.createDelay(1);dl.delayTime.value=0.28;const fb=oc.createGain();fb.gain.value=P.echo;node.connect(dl);dl.connect(fb);fb.connect(dl);dl.connect(oc.destination)}
   src.start();
   let out=await oc.startRendering(),d=out.getChannelData(0),pk=0;for(let i=0;i<d.length;i++)pk=Math.max(pk,Math.abs(d[i]));
   if(pk===0){ // some embedded browsers render offline audio as silence: keep at least the pitch change
@@ -330,30 +376,137 @@ function wav(buf){ // 16-bit PCM mono WAV
   for(let i=0;i<d.length;i++)v.setInt16(44+i*2,Math.max(-1,Math.min(1,d[i]))*32767,true);
   return new Blob([ab],{type:"audio/wav"});
 }
-let fxKey="normal",fxBuf=null,fxJob=0,fxTimer=0;
+function trim(buf){ // cut silence (below 3% of peak) from both ends, keeping 80 ms of air
+  const d=buf.getChannelData(0),sr=buf.sampleRate;let pk=0;for(let i=0;i<d.length;i++)pk=Math.max(pk,Math.abs(d[i]));
+  const th=pk*0.03,pad=Math.round(sr*0.08);let a=0,b=d.length-1;while(a<b&&Math.abs(d[a])<th)a++;while(b>a&&Math.abs(d[b])<th)b--;
+  a=Math.max(0,a-pad);b=Math.min(d.length,b+pad);if(a===0&&b===d.length)return buf;
+  const o=AC().createBuffer(1,b-a,sr);o.copyToChannel(d.slice(a,b),0);return o;
+}
+function download(blob,name){
+  const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=name;
+  document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);
+}
+const safe=s=>(s||"clip").replace(/[^\w\- ]+/g,"").trim().replace(/\s+/g,"-").toLowerCase()||"clip";
+
+// Saved on this device: current settings and your own named styles (localStorage)
+const store={get(k,d){try{const v=localStorage.getItem("reverso-"+k);return v?JSON.parse(v):d}catch(e){return d}},
+  set(k,v){try{localStorage.setItem("reverso-"+k,JSON.stringify(v))}catch(e){}}};
+let P={...BASE,...store.get("fx",{})},styleId=store.get("style","normal"),mine=store.get("presets",[]);
+const styleName=()=>styleId.startsWith("mine:")?(mine.find(m=>"mine:"+m.name===styleId)||{}).name||"custom":(FX[styleId]?FX[styleId].label:"custom");
+
+// Clip library: raw recordings in IndexedDB, so clips survive a reload
+const idb={db:null,
+  open(){if(this.db)return Promise.resolve(this.db);return new Promise((res,rej)=>{const r=indexedDB.open("reverso",1);
+    r.onupgradeneeded=()=>r.result.createObjectStore("clips",{keyPath:"id"});r.onsuccess=()=>{this.db=r.result;res(r.result)};r.onerror=()=>rej(r.error)})},
+  async tx(mode,fn){const db=await this.open();return new Promise((res,rej)=>{const t=db.transaction("clips",mode),s=t.objectStore("clips"),q=fn(s);t.oncomplete=()=>res(q&&q.result);t.onerror=()=>rej(t.error)})},
+  all(){return this.tx("readonly",s=>s.getAll())},put(c){return this.tx("readwrite",s=>s.put(c))},del(id){return this.tx("readwrite",s=>s.delete(id))}};
+let clips=[],selId=null; // {id,name,created,buf,saved}
+const sel=()=>clips.find(c=>c.id===selId)||null;
+async function addClip(buf,name){
+  const c={id:"c"+Date.now().toString(36),name,created:Date.now(),buf,saved:false};
+  clips.unshift(c);selId=c.id;renderClips();updateFx(true);
+  try{await idb.put({id:c.id,name:c.name,created:c.created,blob:wav(monoBuf(buf))});c.saved=true}
+  catch(e){$("fxmsg").textContent="This browser won't keep clips after a reload. Download the ones you need."}
+  renderClips();
+}
+function monoBuf(buf){if(buf.numberOfChannels===1)return buf;const o=AC().createBuffer(1,buf.length,buf.sampleRate);o.copyToChannel(mono(buf),0);return o}
+async function loadClips(){
+  try{const rows=(await idb.all()).sort((a,b)=>b.created-a.created);
+    for(const r of rows){try{clips.push({id:r.id,name:r.name,created:r.created,buf:await AC().decodeAudioData(await r.blob.arrayBuffer()),saved:true})}catch(e){}}
+  }catch(e){}
+  if(clips.length&&!selId)selId=clips[0].id;renderClips();if(sel())updateFx(false);
+}
+function renderClips(){
+  const ul=$("takes");ul.textContent="";
+  const list=clips.slice();if(orig)list.push({id:"game",name:"Step 1 recording",buf:orig,game:true});
+  if(!sel()&&orig)selId="game";
+  list.forEach(c=>{
+    const li=document.createElement("li");li.className="take"+(c.id===selId||(c.game&&selId==="game")?" on":"");
+    const pick=document.createElement("button");pick.className="pick";pick.setAttribute("aria-pressed",li.classList.contains("on"));
+    pick.title="Twist this clip";pick.textContent=c.buf.duration.toFixed(1)+" s";pick.onclick=()=>{selId=c.id;renderClips();updateFx(false)};
+    const nm=document.createElement("input");nm.value=c.name;nm.maxLength=40;nm.setAttribute("aria-label","Clip name");nm.disabled=!!c.game;
+    nm.onchange=async()=>{c.name=nm.value.trim()||"Clip";nm.value=c.name;if(c.saved){try{const rows=await idb.all();const r=rows.find(x=>x.id===c.id);if(r){r.name=c.name;await idb.put(r)}}catch(e){}}};
+    const pl=document.createElement("button");pl.textContent="Play";pl.onclick=()=>play(c.buf);
+    li.append(pick,nm,pl);
+    if(!c.game){const del=document.createElement("button");del.textContent="Delete";let armed=0;
+      del.onclick=async()=>{if(!armed){armed=setTimeout(()=>{armed=0;del.textContent="Delete"},3000);del.textContent="Sure?";return}
+        clearTimeout(armed);clips=clips.filter(x=>x!==c);if(selId===c.id)selId=clips[0]?clips[0].id:(orig?"game":null);
+        try{await idb.del(c.id)}catch(e){}renderClips();if(srcBuf())updateFx(false);else{fxBuf=null;draw($("cfx"),null);setBtns()}};
+      li.append(del)}
+    ul.append(li);
+  });
+  setBtns();
+}
+const srcBuf=()=>selId==="game"?orig:(sel()?sel().buf:null);
+const srcName=()=>selId==="game"?"reverso":(sel()?sel().name:"clip");
+function setBtns(){const ok=!!fxBuf;["pfx","pfxr","sfx"].forEach(i=>$(i).disabled=!ok);$("sall").disabled=!clips.length}
+
+// Style chips (built-in and your saved styles) and fine-tune sliders
+function renderChips(){
+  const box=$("fxchips");box.textContent="";
+  const chip=(id,label,params,removable)=>{
+    const b=document.createElement("button");b.className="chip"+(removable?" mine":"");b.textContent=label;b.setAttribute("aria-pressed",id===styleId);
+    b.onclick=()=>{styleId=id;P={...BASE,...params};store.set("style",styleId);store.set("fx",P);syncControls();renderChips();updateFx(true)};
+    box.append(b);
+    if(removable){const x=document.createElement("button");x.className="chip x";x.setAttribute("aria-label","Delete style "+label);x.textContent="×";
+      x.onclick=()=>{mine=mine.filter(m=>m.name!==label);store.set("presets",mine);if(styleId===id){styleId="custom";store.set("style",styleId)}renderChips();$("fxmsg").textContent=`Deleted style "${label}".`};box.append(x)}
+  };
+  Object.entries(FX).forEach(([k,p])=>{const {label,...params}=p;chip(k,label,params,false)});
+  mine.forEach(m=>chip("mine:"+m.name,m.name,m.params,true));
+}
+function buildSliders(){
+  const box=$("sliders");
+  SLIDERS.forEach(s=>{
+    const l=document.createElement("label");l.className="slider";l.htmlFor="p-"+s.k;
+    l.innerHTML=`<span>${s.label}</span><input type="range" id="p-${s.k}" min="${s.min}" max="${s.max}" step="${s.step}"><output id="o-${s.k}"></output>`;
+    box.append(l);
+    l.querySelector("input").addEventListener("input",e=>{P[s.k]=+e.target.value;$("o-"+s.k).textContent=s.fmt(P[s.k]);changed()});
+  });
+  ["comp","band"].forEach(k=>$("p-"+k).addEventListener("change",e=>{P[k]=e.target.checked;changed()}));
+}
+function syncControls(){SLIDERS.forEach(s=>{$("p-"+s.k).value=P[s.k];$("o-"+s.k).textContent=s.fmt(P[s.k])});$("p-comp").checked=P.comp;$("p-band").checked=P.band}
+let fxTimer=0;
+function changed(){ // a hand-tuned setting: no chip is selected any more
+  if(styleId!=="custom"){styleId="custom";renderChips()}
+  store.set("fx",P);store.set("style",styleId);clearTimeout(fxTimer);fxTimer=setTimeout(()=>updateFx(true),350);
+}
+$("saveform").addEventListener("submit",e=>{
+  e.preventDefault();const name=$("pname").value.trim().slice(0,24);
+  if(!name){$("fxmsg").textContent="Give the style a name first.";$("pname").focus();return}
+  if(FX[name.toLowerCase()]){$("fxmsg").textContent="That name is taken by a built-in style. Try another.";return}
+  mine=mine.filter(m=>m.name!==name);mine.push({name,params:{...P}});store.set("presets",mine);
+  styleId="mine:"+name;store.set("style",styleId);$("pname").value="";renderChips();$("fxmsg").textContent=`Saved style "${name}" on this device.`;
+});
+
+let fxBuf=null,fxJob=0;
 async function updateFx(playAfter){
-  if(!orig)return;const job=++fxJob;
+  const buf=srcBuf();if(!buf)return;const job=++fxJob;
   ["pfx","pfxr","sfx"].forEach(i=>$(i).disabled=true);$("fxmsg").textContent="Twisting your voice…";
   await new Promise(r=>setTimeout(r,20)); // let the message paint before the heavy work
-  let b;try{b=await renderFx(orig,fxKey,+$("semi").value)}catch(e){if(job===fxJob)$("fxmsg").textContent="Couldn't apply that effect in this browser.";return}
+  let b;try{b=await renderFx(buf,P)}catch(e){if(job===fxJob)$("fxmsg").textContent="Couldn't apply that style in this browser.";return}
   if(job!==fxJob)return; // a newer choice replaced this one
-  fxBuf=b;draw($("cfx"),fxBuf,css("--wave2"));
-  ["pfx","pfxr","sfx"].forEach(i=>$(i).disabled=false);$("fxmsg").textContent=FX[fxKey].label+(+$("semi").value?`, pitch ${$("semi").value>0?"+":""}${$("semi").value}`:"")+". Ready.";
+  fxBuf=b;draw($("cfx"),fxBuf,css("--wave2"));setBtns();
+  $("fxmsg").textContent=`${srcName()} · ${styleName()}${P.semi?`, pitch ${P.semi>0?"+":""}${P.semi}`:""}. Ready.`;
   if(playAfter)play(fxBuf);
 }
-Object.entries(FX).forEach(([k,p])=>{
-  const b=document.createElement("button");b.className="chip";b.textContent=p.label;b.dataset.fx=k;b.setAttribute("aria-pressed",k===fxKey);
-  b.onclick=()=>{fxKey=k;document.querySelectorAll(".chip").forEach(c=>c.setAttribute("aria-pressed",c.dataset.fx===k));
-    $("semi").value=p.semi;$("semiv").textContent=(p.semi>0?"+":"")+p.semi;if(orig)updateFx(true)};
-  $("fxchips").appendChild(b);
-});
-$("semi").oninput=()=>{const v=+$("semi").value;$("semiv").textContent=(v>0?"+":"")+v;clearTimeout(fxTimer);fxTimer=setTimeout(()=>updateFx(true),300)};
 $("pfx").onclick=()=>play(fxBuf);
 $("pfxr").onclick=()=>play(reverse(fxBuf));
-$("sfx").onclick=()=>{
-  const url=URL.createObjectURL(wav(fxBuf)),a=document.createElement("a");a.href=url;a.download=`reverso-${fxKey}.wav`;
-  document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),5000);
+$("sfx").onclick=()=>{const b=$("trim").checked?trim(fxBuf):fxBuf;download(wav(b),`${safe(srcName())}-${safe(styleName())}.wav`)};
+$("sall").onclick=async()=>{ // every clip in the library, with the current style, one file each
+  $("sall").disabled=true;let n=0;
+  for(const c of clips){$("fxmsg").textContent=`Preparing ${++n} of ${clips.length}: ${c.name}…`;
+    let b=await renderFx(c.buf,P);if($("trim").checked)b=trim(b);download(wav(b),`${safe(c.name)}-${safe(styleName())}.wav`);
+    await new Promise(r=>setTimeout(r,500))}
+  $("fxmsg").textContent=`Downloaded ${clips.length} clip${clips.length>1?"s":""} as ${styleName()}.`;$("sall").disabled=false;
 };
+let clipNo=0;
+$("rt").onclick=()=>toggleRec($("rt"),$("tt"),buf=>{$("tt").textContent="";addClip(buf,"Clip "+(clips.length+1))},{clean:$("clean").checked,max:180});
+$("ft").onchange=async e=>{const f=e.target.files[0];e.target.value="";if(!f)return;
+  if(!f.type.startsWith("audio/")){$("fxmsg").textContent="That file isn't audio.";return}
+  try{addClip(await decode(f),f.name.replace(/\.[^.]+$/,"").slice(0,40))}catch(err){$("fxmsg").textContent="Couldn't read that file (max 15 MB)."}};
+$("clean").checked=store.get("clean",false);$("clean").onchange=()=>store.set("clean",$("clean").checked);
+$("trim").checked=store.get("trim",true);$("trim").onchange=()=>store.set("trim",$("trim").checked);
+buildSliders();syncControls();renderChips();renderClips();loadClips();
 
 $("r1").onclick=()=>toggleRec($("r1"),$("t1"),setOriginal);
 $("r3").onclick=()=>toggleRec($("r3"),$("t3"),setAttempt);
